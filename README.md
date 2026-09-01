@@ -1,26 +1,48 @@
-# CPU Scheduling Simulator (C++)
+# Reliable UDP Transport (Go-Back-N) — C++
 
-Simulates classic CPU scheduling algorithms and compares them on the same workload.
+A reliable, in-order file-transfer protocol built on top of UDP. UDP gives no
+delivery or ordering guarantees; this rebuilds them in user space using a
+sliding-window Go-Back-N ARQ.
 
-## Algorithms
-- **FCFS** — First Come First Served (non-preemptive)
-- **SJF** — Shortest Job First (non-preemptive)
-- **STCF** — Shortest Time-to-Completion First (preemptive SJF)
-- **Priority** — non-preemptive, lower number = higher priority
-- **Round Robin** — configurable time quantum (default 2)
-- **MLFQ** — Multi-Level Feedback Queue: 3 levels, per-level allotment {4,8,16},
-  priority boost every 30 ticks; demotion charged on total time at a level
-  (the anti-gaming form), periodic boost prevents starvation.
+## What it implements
+- **Wire format** (`packet.h`): 14-byte header (type, length, seqno, ackno,
+  checksum) in network byte order + payload. Integrity via a 16-bit Internet
+  checksum.
+- **Sender** (`sender.cpp`): sliding window of 8 packets, a single timer on the
+  window base, **go-back-N** retransmission on timeout, FIN teardown. Includes a
+  built-in **lossy channel** that drops/duplicates packets at a configurable
+  rate for testing.
+- **Receiver** (`receiver.cpp`): accepts strictly in-order packets, discards
+  out-of-order/duplicate packets, replies with **cumulative ACKs** (next
+  expected seqno), writes the output file.
 
-## Metrics
-Per job: turnaround, response, and waiting time.
-Per policy: average of each, plus CPU utilization and throughput.
+## ACK convention
+`ackno` = the next sequence number the receiver expects (it has everything with
+`seqno < ackno`). The sender sets its window base to `ackno`.
 
-## Build & run
+## Build
 ```
-g++ -std=c++17 -O2 scheduler.cpp -o scheduler
-./scheduler                  # built-in sample workload
-./scheduler sample_workload.txt
+g++ -std=c++17 -O2 sender.cpp   -o sender
+g++ -std=c++17 -O2 receiver.cpp -o receiver
 ```
 
-Workload file format, one process per line: `pid arrival burst priority`
+## Run manually
+```
+./receiver 9000 outfile.bin           # terminal 1
+./sender 127.0.0.1 9000 infile.bin 0.05   # terminal 2 (5% loss)
+```
+
+## Automated reliability test
+```
+./run_test.sh <port> <loss_rate> <size_bytes>
+./run_test.sh 9000 0.05 300000
+```
+Generates a random file, transfers it under simulated loss, and verifies the
+received file is byte-for-byte identical (sha256). Verified passing at 5%, 15%,
+and 30% loss.
+
+## Notes / extensions
+- Reordering is handled by the same in-order/discard logic (a dropped-then-
+  retransmitted packet arrives out of order and is discarded until its turn).
+- Multi-connection concurrency (one I/O thread + per-connection state) is the
+  documented optional extension; this build is a clean single-transfer core.
